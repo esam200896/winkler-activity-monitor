@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+
+# Subagent-driven-development process scratch (not part of the project)
+.superpowers/
