@@ -15,26 +15,36 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Long-lived job: loops internally so checks happen every 5 min regardless
+    # of GitHub's (heavily throttled) scheduler. Stays under the 6h hard limit.
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - name: Run monitor
+      - name: Monitor loop (checks every 5 minutes)
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
-        run: python monitor.py
-      - name: Commit state changes
         run: |
-          if [ -n "$(git status --porcelain state.json)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add state.json
-            git commit -m "chore: update state [skip ci]"
-            git push
-          else
-            echo "No state change."
-          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Run for ~5h50m, checking every 5 min, then exit so a queued run
+          # (held by the concurrency lock) takes over with no gap.
+          END=$(( SECONDS + 350*60 ))
+          while : ; do
+            echo "::group::check $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            python monitor.py || echo "monitor.py exited non-zero (continuing)"
+            if [ -n "$(git status --porcelain state.json)" ]; then
+              git add state.json
+              git commit -m "chore: update state [skip ci]"
+              git pull --rebase --autostash || true
+              git push || echo "push failed (continuing)"
+            fi
+            echo "::endgroup::"
+            [ "$SECONDS" -ge "$END" ] && break
+            sleep 300
+          done
